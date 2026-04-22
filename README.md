@@ -1,111 +1,162 @@
-# Multi-Container Runtime
+# OS-Jackfruit — Supervised Multi-Container Runtime
 
-A lightweight Linux container runtime in C with a long-running supervisor and a kernel-space memory monitor.
+## 1. Team Information
 
-Read [`project-guide.md`](project-guide.md) for the full project specification.
+| Name     | SRN              |
+|----------|------------------|
+| Abhiram  | PES1UG24CS232    |
+| Kushagra | PES1UG24CS245    |
 
 ---
 
-## Getting Started
+## 2. Build, Load, and Run Instructions
 
-### 1. Fork the Repository
-
-1. Go to [github.com/shivangjhalani/OS-Jackfruit](https://github.com/shivangjhalani/OS-Jackfruit)
-2. Click **Fork** (top-right)
-3. Clone your fork:
-
-```bash
-git clone https://github.com/<your-username>/OS-Jackfruit.git
-cd OS-Jackfruit
-```
-
-### 2. Set Up Your VM
-
-You need an **Ubuntu 22.04 or 24.04** VM with **Secure Boot OFF**. WSL will not work.
-
-Install dependencies:
+### Prerequisites
+- Ubuntu 22.04 / 24.04 (VM recommended, Secure Boot OFF, no WSL)
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential linux-headers-$(uname -r)
 ```
 
-### 3. Run the Environment Check
-
+### Build
 ```bash
-cd boilerplate
-chmod +x environment-check.sh
-sudo ./environment-check.sh
+make
 ```
 
-Fix any issues reported before moving on.
-
-### 4. Prepare the Root Filesystem
-
+### Load Kernel Module
 ```bash
-mkdir rootfs-base
-wget https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz
-tar -xzf alpine-minirootfs-3.20.3-x86_64.tar.gz -C rootfs-base
+sudo insmod monitor.ko
+ls -l /dev/container_monitor
+```
 
-# Make one writable copy per container you plan to run
+### Start Supervisor
+```bash
+sudo ./engine supervisor ./rootfs-base
+```
+
+### Create Writable RootFS
+```bash
 cp -a ./rootfs-base ./rootfs-alpha
 cp -a ./rootfs-base ./rootfs-beta
 ```
 
-Do not commit `rootfs-base/` or `rootfs-*` directories to your repository.
-
-### 5. Understand the Boilerplate
-
-The `boilerplate/` folder contains starter files:
-
-| File                   | Purpose                                             |
-| ---------------------- | --------------------------------------------------- |
-| `engine.c`             | User-space runtime and supervisor skeleton          |
-| `monitor.c`            | Kernel module skeleton                              |
-| `monitor_ioctl.h`      | Shared ioctl command definitions                    |
-| `Makefile`             | Build targets for both user-space and kernel module |
-| `cpu_hog.c`            | CPU-bound test workload                             |
-| `io_pulse.c`           | I/O-bound test workload                             |
-| `memory_hog.c`         | Memory-consuming test workload                      |
-| `environment-check.sh` | VM environment preflight check                      |
-
-Use these as your starting point. You are free to restructure the repository however you want — the submission requirements are listed in the project guide.
-
-### 6. Build and Verify
-
+### Start Containers
 ```bash
-cd boilerplate
-make
+sudo ./engine start alpha ./rootfs-alpha /bin/sh --soft-mib 48 --hard-mib 80
+sudo ./engine start beta ./rootfs-beta /bin/sh --soft-mib 64 --hard-mib 96
 ```
 
-If this compiles without errors, your environment is ready.
-
-### 7. GitHub Actions Smoke Check
-
-Your fork will inherit a minimal GitHub Actions workflow from this repository.
-
-That workflow only performs CI-safe checks:
-
-- `make -C boilerplate ci`
-- user-space binary compilation (`engine`, `memory_hog`, `cpu_hog`, `io_pulse`)
-- `./boilerplate/engine` with no arguments must print usage and exit with a non-zero status
-
-The CI-safe build command is:
-
+### Container Management
 ```bash
-make -C boilerplate ci
+sudo ./engine ps
+sudo ./engine logs alpha
 ```
 
-This smoke check does not test kernel-module loading, supervisor runtime behavior, or container execution.
+### Run Memory Test
+```bash
+cp memory_hog ./rootfs-alpha/
+sudo ./engine start memtest ./rootfs-alpha /memory_hog --soft-mib 5 --hard-mib 10
+dmesg | grep container_monitor
+```
+
+### Run Scheduling Experiment
+```bash
+cp cpu_hog ./rootfs-alpha/
+cp io_pulse ./rootfs-beta/
+
+sudo ./engine start cpu_test ./rootfs-alpha /cpu_hog --nice 0
+sudo ./engine start io_test ./rootfs-beta /io_pulse --nice 0
+sleep 10
+cat logs/cpu_test.log
+cat logs/io_test.log
+```
+
+### Stop Containers
+```bash
+sudo ./engine stop alpha
+sudo ./engine stop beta
+```
+
+### Cleanup
+```bash
+dmesg | tail
+sudo rmmod monitor
+```
 
 ---
 
-## What to Do Next
+## 3. Demo with Screenshots
 
-Read [`project-guide.md`](project-guide.md) end to end. It contains:
+### 1. Multi-container supervision
+![ss1](images_os/1.jpeg)
 
-- The six implementation tasks (multi-container runtime, CLI, logging, kernel monitor, scheduling experiments, cleanup)
-- The engineering analysis you must write
-- The exact submission requirements, including what your `README.md` must contain (screenshots, analysis, design decisions)
+### 2. Metadata tracking
+![ss2](images_os/2.jpeg)
 
-Your fork's `README.md` should be replaced with your own project documentation as described in the submission package section of the project guide. (As in get rid of all the above content and replace with your README.md)
+### 3. Bounded-buffer logging
+![ss3](images_os/3.jpeg)
+
+### 4. CLI and IPC
+![ss4](images_os/4.jpeg)
+
+### 5. Soft-limit warning
+![ss5](images_os/5.jpeg)
+
+### 6. Hard-limit enforcement
+![ss6](images_os/6.jpeg)
+
+### 7. Scheduling experiment
+![ss7](images_os/7.jpeg)
+
+### 8. Clean teardown
+![ss8](images_os/8.jpeg)
+
+---
+
+## 4. Engineering Analysis
+
+### Isolation Mechanisms
+Containers use Linux namespaces (PID, UTS, Mount) and chroot to isolate processes and filesystem.
+
+### Supervisor & Lifecycle
+Supervisor process manages containers, handles SIGCHLD, and prevents zombie processes using waitpid.
+
+### IPC & Synchronization
+- Pipes → logging  
+- UNIX sockets → CLI communication  
+- Mutex + condition variables → safe buffer handling  
+
+### Memory Management
+- RSS measures real memory usage  
+- Soft limit → warning  
+- Hard limit → process killed  
+
+### Scheduling
+Linux CFS scheduler distributes CPU based on nice values.
+
+---
+
+## 5. Design Decisions and Tradeoffs
+
+- Used namespaces without network namespace → simpler but shared networking  
+- Single supervisor → simple but less scalable  
+- Pipes for logging → easy but per-container overhead  
+- Mutex over spinlock → efficient CPU usage  
+
+---
+
+## 6. Scheduler Experiment Results
+
+### Experiment 1: CPU vs CPU (different priority)
+Higher priority container completed more work.
+
+### Experiment 2: CPU vs I/O
+I/O-bound process finished faster due to yielding CPU.
+
+---
+
+## Notes
+- Run on Ubuntu VM  
+- Ensure kernel headers match  
+- Place screenshots inside `images_os/`
